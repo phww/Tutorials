@@ -2,7 +2,7 @@
 # _*_ coding: utf-8 _*_
 # @Time : 2021/5/14 下午4:59
 # @Author : PH
-# @Version：V 0.1
+# @Version：V 1.0
 # @File : template.py
 # @desc :
 import torch
@@ -13,31 +13,36 @@ import os.path as osp
 
 class TemplateModel:
     def __init__(self):
-        # tensorboard
-        self.writer = None
-        # 训练状态
-        self.global_step = 0
-        self.epoch = 0
-        self.best_acc = 0.0
+        # 必须设定
         # 模型架构
-        self.model = None
-        self.optimizer = None
+        # 将模型和优化器以list保存，方便对整个模型的多个部分设定对应的优化器
+        self.model_list = None  # 模型的list
+        self.optimizer_list = None  # 优化器的list
         self.criterion = None
         # 数据集
         self.train_loader = None
         self.test_loader = None
+
+        # 下面的可以不设定
+        # tensorboard
+        self.writer = None  # 推荐设定
+        # 训练状态
+        self.global_step = 0
+        self.epoch = 0
+        self.best_metric = {}
+        self.key_metric = None
         # 运行设备
-        self.device = None
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
         # check_point 目录
-        self.ckpt_dir = None
+        self.ckpt_dir = "./check_point"
         # 训练时print的间隔
-        self.log_per_step = None
+        self.log_per_step = 5  # 推荐按数据集大小设定
 
     def check_init(self):
         # 检测摸板的初始状态，可以在这加上很多在训练之前的操作
         # 我喜欢加一个清空cuda的cache，保证训练时显存尽量不浪费
-        assert self.model
-        assert self.optimizer
+        assert self.model_list
+        assert self.optimizer_list
         assert self.criterion
         assert self.metric
         assert self.train_loader
@@ -46,77 +51,91 @@ class TemplateModel:
         assert self.ckpt_dir
         assert self.log_per_step
         torch.cuda.empty_cache()
-        self.model.to(self.device)
+        for model in self.model_list:
+            model.to(self.device)
         if not osp.exists(self.ckpt_dir):
             os.mkdir(self.ckpt_dir)
 
     def load_state(self, fname, optim=True):
-        # 读取保存的模型到摸板之中。如果要继续训练的模型optim=True
+        # 读取保存的模型到模板之中。如果要继续训练的模型optim=True
         # 使用最佳模型做推断optim=False
         state = torch.load(fname)
-
-        if isinstance(self.model, torch.nn.DataParallel):  # 多卡训练
-            self.model.module.load_state_dict(state['model'])
-        else:  # 非多卡训练
-            self.model.load_state_dict(state['model'])
-        # 恢复一些状态参数
-        if optim and 'optimizer' in state:
-            self.optimizer.load_state_dict(state['optimizer'])
+        for idx, model in enumerate(self.model_list):
+            if isinstance(model, torch.nn.DataParallel):  # 多卡训练
+                model.module.load_state_dict(state[f'model{idx}'])
+            else:  # 非多卡训练
+                model.load_state_dict(state[f'model{idx}'])
+            # 恢复一些状态参数
+            if optim and f'optimizer_list{idx}' in state:
+                self.optimizer_list[idx].load_state_dict(state[f'optimizer_list{idx}'])
         self.global_step = state['global_step']
         self.epoch = state['epoch']
-        self.best_acc = state['best_acc']
+        self.best_metric = state['best_metric']
+        self.key_metric = state['key_metric']
         print('load model from {}'.format(fname))
 
     def save_state(self, fname, optim=True):
         # 保存模型，其中最佳模型不用保存优化器中的梯度。
         # 而训练过程中保存的其他模型需要保存优化器中的梯度以便继续训练
         state = {}
-
-        if isinstance(self.model, torch.nn.DataParallel):
-            state['model'] = self.model.module.state_dict()
-        else:
-            state['model'] = self.model.state_dict()
-        # 训练过程中的模型除了保存模型的参数外，还要保存当前训练的状态：optim中的参数
-        if optim:
-            state['optimizer'] = self.optimizer.state_dict()
+        for idx, model in enumerate(self.model_list):
+            if isinstance(model, torch.nn.DataParallel):
+                state[f'model{idx}'] = model.module.state_dict()
+            else:
+                state[f'model{idx}'] = model.state_dict()
+            # 训练过程中的模型除了保存模型的参数外，还要保存当前训练的状态：optim中的参数
+            if optim:
+                state[f'optimizer_list{idx}'] = self.optimizer_list[idx].state_dict()
         state['global_step'] = self.global_step
         state['epoch'] = self.epoch
-        state['best_acc'] = self.best_acc
+        state['best_metric'] = self.best_metric
+        state['key_metric'] = self.key_metric
         torch.save(state, fname)
         print('save model at {}'.format(fname))
 
     def train_loop(self):
+        print("*" * 15, f"epoch:{self.epoch + 1}", "*" * 15)
         # 训练一个epoch
-        self.model.train()
+        for model in self.model_list:
+            model.train()
         self.epoch += 1
         running_loss = 0.0
         for step, batch in enumerate(self.train_loader):
             self.global_step += 1
-            self.optimizer.zero_grad()
             batch_loss = self.train_loss_per_batch(batch)
+            # 多个优化器需要按逆序更新每一个优化器
+            for optimizer in reversed(self.optimizer_list):
+                optimizer.zero_grad()
+
             batch_loss.backward()
-            self.optimizer.step()
+
+            for optimizer in reversed(self.optimizer_list):
+                optimizer.step()
             running_loss += batch_loss.item()
 
             # 记录损失除了训练刚开始时是用此时的loss外，其他都是用一批loss的平均loss
             if self.global_step == 1:
-                self.writer.add_scalar('loss', batch_loss.item(), self.global_step)
+                if self.writer is not None:
+                    self.writer.add_scalar('loss', batch_loss.item(), self.global_step)
                 print(f"loss:{batch_loss.item() : .5f}\t"
                       f"cur:[{step * self.train_loader.batch_size}]\[{len(self.train_loader.dataset)}]")
 
             # 记录每一批loss的平均loss
             elif step % self.log_per_step == 0 and step != 0:
                 avg_loss = running_loss / (self.log_per_step * len(batch))
-                self.writer.add_scalar('loss', avg_loss, self.global_step)
+                if self.writer is not None:
+                    self.writer.add_scalar('loss', avg_loss, self.global_step)
                 print(f"loss:{avg_loss : .5f}\t"
                       f"cur:[{step * self.train_loader.batch_size}]\[{len(self.train_loader.dataset)}]")
 
                 # 每训练一定的批次就记录此时的参数和梯度
-                for tag, value in self.model.named_parameters():
-                    tag = tag.replace('.', '/')
-                    self.writer.add_histogram('weights/' + tag, value.data.cpu().numpy())
-                    if value.grad is not None:  # 在FineTurn时有些参数被冻结了，没有梯度。也就不用记录了
-                        self.writer.add_histogram('grads/' + tag, value.grad.data.cpu().numpy())
+                if self.writer is not None:
+                    for model in self.model_list:
+                        for tag, value in model.named_parameters():
+                            tag = tag.replace('.', '/')
+                            self.writer.add_histogram('weights/' + tag, value.data.cpu().numpy())
+                            if value.grad is not None:  # 在FineTurn时有些参数被冻结了，没有梯度。也就不用记录了
+                                self.writer.add_histogram('grads/' + tag, value.grad.data.cpu().numpy())
                 running_loss = 0.0
 
     def train_loss_per_batch(self, batch):
@@ -141,13 +160,17 @@ class TemplateModel:
         else:
             y = y.to(self.device, dtype=y_dtype)
 
-        pred = self.model(x)
+        # 若模型的输入不是一个tensor，按需求改
+        pred = x
+        for model in self.model_list:
+            pred = model(pred)
         loss = self.criterion(pred, y)
         return loss
 
     def eval(self, save_per_epochs=1):
         # 在整个测试集上做评估，使用分批次的metric的平均值表示训练集整体的metric
-        self.model.eval()
+        for model in self.model_list:
+            model.eval()
         scores = {}
         # 分批计算metric
         cnt = 0
@@ -167,23 +190,33 @@ class TemplateModel:
             scores[key] /= cnt
 
         # Tensorboard记录
-        for key in scores.keys():
-            self.writer.add_scalar(f"{key}", scores[key], self.epoch)
+        if self.writer is not None:
+            for key in scores.keys():
+                self.writer.add_scalar(f"{key}", scores[key], self.epoch)
 
-        # 根据准确率acc来判定是否保存最佳模型
-        if scores["acc"] >= self.best_acc:
-            self.best_acc = scores["acc"]
-            self.save_state(osp.join(self.ckpt_dir, f'best.pth'), False)
+        # 根据scores[self.key_metric]来判定是否保存最佳模型.
+        # self.key_metric需要在metric函数中初始化，分类任务常用self.key_metric = "acc"
+        for key in self.best_metric.keys():
+            # 更新所有metric的最佳结果到self.best_metric字典中
+            if scores[key] >= self.best_metric[key]:
+                self.best_metric[key] = scores[key]
+                # 保存最佳模型
+                if key == self.key_metric:
+                    self.save_state(osp.join(self.ckpt_dir, f'best.pth'), False)
         if self.epoch % save_per_epochs == 0:  # 每次save_per_epochs次评估保存当前模型
             self.save_state(osp.join(self.ckpt_dir, f'epoch{self.epoch}.pth'))
-        print('epoch:{}\tACC {:.5f}'.format(self.epoch, scores["acc"]))
-        return scores["acc"]
+        print('epoch:{}\tbleu {:.5f}'.format(self.epoch, scores["bleu"]))
+        return scores["bleu"]
 
+    # 以下eval_scores_per_batch()和metric()，有时要按需求修改
     def eval_scores_per_batch(self, batch):
         x, y = batch
         x = x.to(self.device)
         y = y.to(self.device)
-        pred = self.model(x)
+
+        pred = x
+        for model in self.model_list():
+            pred = model(pred)
         scores_pre_batch = self.metric(pred, y)
         return scores_pre_batch
 
@@ -206,20 +239,31 @@ class TemplateModel:
                 各种性能指标的字典，务必要有scores["acc"]
 
         """
+        # 初始化self.key_metric
+        self.key_metric = "acc"
+
         scores = {}
         correct = (torch.argmax(pred, dim=1) == y).type(torch.float).sum().item()
-        scores["acc"] = correct / self.test_loader.batch_size
+        scores[self.key_metric] = correct / self.test_loader.batch_size
         return scores
 
+    # 有时要按需求修改
     def inference(self, x):
         x = x.to(self.device)
-        return self.model(x)
+        for model in self.model_list:
+            x = model(x)
+        return x
 
     def get_model_info(self, fake_inp):
         # 输出模型信息和在Tensorboard中绘制模型计算图
-        self.writer.add_graph(self.model, fake_inp.to(self.device))
-        # transformer有BUG
+        if self.writer is not None:
+            for model in self.model_list:
+                self.writer.add_graph(model, fake_inp.to(self.device))
+        # summary对transformer有BUG
         # print(summary(self.model, batch_size=32, input_size=fake_inp.shape[1:], device=self.device))
 
     def num_parameters(self):
-        return sum([p.data.nelement() for p in self.model.parameters()])
+        num = 0
+        for model in self.model_list:
+            num += sum([p.data.nelement() for p in model.parameters()])
+        return num

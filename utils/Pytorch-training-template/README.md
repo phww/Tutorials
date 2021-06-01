@@ -4,6 +4,17 @@
 
 [我的github](https://github.com/phww/tutorials-and-utils/tree/main/utils/Pytorch-training-template)
 
+## 更新
+
+### 2021年06月01日21:39:03
+
+**1.使用self.model_list 代替单独的 self.model，使用self.optimizer_list代替单独的self.optimizer**
+
+- 如果模型和优化器还是只有一个使用self.model_list = [mdoel], self.optimizer_list = [optimizer]和以前没有任何区别
+- 使用list保存整个模型的多个部分，有利于为整个模型设置多个优化器。比如一个CNN+RNN网络，可以为CNN和RNN网络分别设置对应的优化器
+
+**2.用self.best_metric字典记录所有metric的最优值**
+
 ## 使用方法
 
 1. 下载Pytorch-training-template文件夹下的文件，推荐将文件夹改名为utils。然后将文件夹复制到模型工程目录下
@@ -17,31 +28,36 @@
    train_loader = ...
    test_loader = ...
    # 模型信息
-   model = ...
-   optimizer= ...
+   model_list = [model1, model2...]
+   optimizer_list= [optimizer1, optimizer2...]
    loss_fn = ...
    class Trainer(TemplateModel):
        def __init__(self):
            super(Trainer, self).__init__()
+        	# 必须设定
+           # 模型架构
+           # 将模型和优化器以list保存，方便对整个模型的多个部分设定对应的优化器
+           self.model_list = None  # 模型的list
+           self.optimizer_list = None  # 优化器的list
+           self.criterion = None
+           # 数据集
+           self.train_loader = None
+           self.test_loader = None
+   
+           # 下面的可以不设定
            # tensorboard
-           self.writer = SummaryWriter()
+           self.writer = SummaryWriter() # 推荐设定
            # 训练状态
            self.global_step = 0
            self.epoch = 0
-           self.best_acc = 0.0
-           # 模型架构
-           self.model = model
-           self.optimizer = optimizer
-           self.criterion = loss_fn
-           # 数据集
-           self.train_loader = train_loader
-           self.test_loader = test_loader
+           self.best_metric = {}
+           self.key_metric = None
            # 运行设备
            self.device = "cuda" if torch.cuda.is_available() else "cpu"
            # check_point 目录
            self.ckpt_dir = "./check_point"
            # 训练时print的间隔
-           self.log_per_step = 100
+           self.log_per_step = 5  # 推荐按数据集大小设定
    ```
 
 3. 生成Trainer的一个实例trainer，主要使用train_loop()和eval()两个成员函数，同时注意是否要继续训练某个模型。如下：
@@ -52,11 +68,11 @@
        trainer = Trainer()
        trainer.check_init()
        trainer.get_model_info(fake_inp=torch.randn(1, 1, 32, 32))
-       # 继续训练某个模型
+       # 如果继续训练某个模型
        if continue_training:
            trainer.load_state(continue_model)
+       # 否则直接重新训练
        for epoch in range(epochs):
-           print(f"Epoch {epoch + 1}\n-------------------------------")
            trainer.train_loop()
            trainer.eval(save_per_epochs=5)
    ```
@@ -84,10 +100,12 @@
 model_T = torch.load("best.pth")
 pred = model_T.inference(inp)
 # 2.读取模型参数后正常使用
-model = ...
 state = torch.load("best.pth")
-model.load_state_dict(state['model'])
-pred = model(inp)
+for idx in range(len(model_list)):
+	model_list[idx].load_state_dict(state[f'model{idx}'])
+pred = inp
+for model in model_list:
+	pred = model(pred)
 ```
 
 
@@ -120,7 +138,7 @@ train_loss_per_batch(self, batch)函数负责计算训练集中一个批次的lo
 
 ### 模型summary的BUG
 
-get_model_info()函数内使用了torchsummary这个包中的summary()方法。貌似含有Transformer结构的模型该方法会报错。但是不会影响writer.add_graph()方法在Tensorboard中绘制带Transformer结构的模型的计算图。
+get_model_info()函数内使用了torchsummary这个包中的summary()方法。貌似含有Transformer结构的模型该方法会报错。但是不会影响writer.add_graph()方法在Tensorboard中绘制带Transformer结构的模型的计算图。**注意绘制了计算图的Tensorboard log文件会比较大**
 
 ![image-20210527215825803](https://pic-1305686174.cos.ap-nanjing.myqcloud.com/image-20210527215825803.png)
 
