@@ -6,6 +6,56 @@
 
 ## 更新
 
+2021年06月06日20:49:26
+
+1. 将stdout重定位到控制台和log.txt文件。这样print的信息会在控制台出现的同时，也会保存在log.txt文件中。
+
+```python
+class Logger(object):
+    """将stdout重定位到log文件和控制台
+        即print时会将信息打印在控制台的
+        同时也将信息保存在log文件中
+    """
+
+    def __init__(self, filename):
+        self.console = sys.stdout
+        self.log = open(filename, "a")
+
+    def write(self, message):
+        self.console.write(message)
+        self.log.write(message)
+
+    # 清空log文件中的内容
+    def clean(self):
+        self.log.truncate(0)
+
+    def flush(self):
+        pass
+```
+
+2. 增加lr_scheduler，基于以下代码实现
+
+```python
+self.lr_scheduler_list = [torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer,
+                                                                     mode="max",
+                                                                     factor=0.1,
+                                                                     patience=3,
+                                                                     cooldown=1,
+                                                                     min_lr=1e-7,
+                                                                     verbose=True)
+                          for optimizer in self.optimizer_list]
+```
+
+3. 一个demo见[train.py]()。同时log.txt也记录了一次训练，且Tensorboard也有全部功能展示，在命令行使用tensorboard --logdir runs 查看。 
+
+4. 评估时，也会计算loss
+
+   ![image-20210606210506497](https://pic-1305686174.cos.ap-nanjing.myqcloud.com/image-20210606210506497.png)
+
+---
+
+
+
 ### 2021年06月01日21:39:03
 
 **1.使用self.model_list 代替单独的 self.model，使用self.optimizer_list代替单独的self.optimizer**
@@ -15,7 +65,13 @@
 
 **2.用self.best_metric字典记录所有metric的最优值**
 
+---
+
+
+
 ## 使用方法
+
+**见train.py!!!**
 
 1. 下载Pytorch-training-template文件夹下的文件，推荐将文件夹改名为utils。然后将文件夹复制到模型工程目录下
 
@@ -132,7 +188,7 @@ train_loss_per_batch(self, batch)函数负责计算训练集中一个批次的lo
 
 ### 计算测试集的性能指标metric
 
-本模板使用eval_scores_per_batch(self, batch)配合metric(self, pred, y)函数计算测试集中一批数据的metric，因为不同任务的性能指标太难统一了，这里只是实现了**多分类任务求准确率**的方法。其他任务请按需求继承这个类的时候再重载metric()函数，注意metric()函数返回数据类型为字典,且一定要有准确率acc这个指标，因为acc用于保存训练过程中的最优模型。这个模板使用**分批计算**metric再求全部批次的平均值的策略得到整体的metric。不会将全部的预测和ground truth保存在preds和ys中然后在cpu上进行预测。因为如果测试集或验证集太大（>50000）可能CPU内存装不下，训练会报错.**但是有的metric可能不能使用分批得到的metric求平均来表示整体的metric**,按需求改吧
+本模板使用eval_scores_per_batch(self, batch)配合metric(self, pred, y)函数计算测试集中一批数据的metric，因为不同任务的性能指标太难统一了，这里只是实现了**多分类任务求准确率**的方法。其他任务请按需求继承这个类的时候再重载metric()函数，注意metric()函数返回数据类型为字典,且一定设定self.key_metric这个指标，如self.key_metric=“acc”。因为scores[self.key_metric]用于保存训练过程中的最优模型。这个模板使用**分批计算**metric再求全部批次的平均值的策略得到整体的metric。不会将全部的预测和ground truth保存在preds和ys中然后在cpu上进行预测。因为如果测试集或验证集太大（>50000）可能CPU内存装不下，训练会报错.**但是有的metric可能不能使用分批得到的metric求平均来表示整体的metric**,按需求改吧
 
 
 

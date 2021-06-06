@@ -339,8 +339,8 @@ class TemplateModel:
         if self.writer is not None:
             for model in self.model_list:
                 self.writer.add_graph(model, fake_inp.to(self.device))
-        # summary对transformer有BUG
-        # print(summary(self.model, batch_size=32, input_size=fake_inp.shape[1:], device=self.device))
+                # summary对transformer有BUG
+                print(summary(model, batch_size=32, input_size=fake_inp.shape[1:], device=self.device))
 
     def num_parameters(self):
         num = 0
