@@ -6,7 +6,55 @@
 
 ## 更新
 
-2021年06月06日20:49:26
+### 2021年06月16日20:04:40
+
+1. lr_scheduler.ReduceLROnPlateau可以基于**最大化验证集的‘metric’或者最小化验证集的‘loss’**来调整学习率
+
+2. 打印各种信息的函数
+
+   ```python
+   def print_best_metrics(self):
+       """打印模型的最优metric"""
+       for key in self.best_metric.keys():
+           print(f"{key}:\t{self.best_metric[key]}")
+   
+   def print_final_lr(self):
+       """打印学习率"""
+       for i, optimizer in enumerate(self.optimizer_list):
+           print(f"final_lr_{i}:{optimizer.param_groups[0]['lr']}")
+   
+   def print_all_member(self, print_model=False):
+       """模板的信息"""
+       print(15 * "=", "template config", 15 * "=")
+       # 不重要，不需要打印的信息
+       except_member = ["best_metric", "key_metric", "train_loader", "test_loader", "writer"]
+       # 模型信息太长了，选择打印
+       if not print_model:
+           except_member.append("model_list")
+       for name, value in vars(self).items():
+           if name not in except_member:
+               print(f"{name}:{value}")
+   ```
+
+   ![image-20210616222826108](https://pic-1305686174.cos.ap-nanjing.myqcloud.com/image-20210616222826108.png)
+
+3. check_init时如果有设置**argparser**,将打印参数信息到控制台和log文件
+
+4. 调整log文件保存在check_point目录下
+
+5. 训练时，tensorboard不在记录第一个样本的训练loss
+
+6. 发现并修正一个bug：保存的最佳metric是每个epoch中最后一个batch的metric，不是每个epoch的平均metric
+
+7. tensorboard中使用一个坐标轴记录每个epoch中训练集所有样本的平均loss和验证集中所有样本的平均loss。方便观察模型是否过拟合或欠拟合
+
+   ![avg_epoch_loss](https://pic-1305686174.cos.ap-nanjing.myqcloud.com/avg_epoch_loss.svg)
+
+---
+
+
+
+### 2021年06月06日20:49:26
 
 1. 将stdout重定位到控制台和log.txt文件。这样print的信息会在控制台出现的同时，也会保存在log.txt文件中。
 

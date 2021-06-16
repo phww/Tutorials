@@ -6,7 +6,6 @@
 # @File : train.py
 # @desc :
 import time
-
 import torch
 import torch.nn as nn
 from torchvision.datasets import CIFAR10
@@ -15,6 +14,17 @@ from torchvision.models.resnet import resnet101
 from torchvision.transforms import Compose, ToTensor, RandomHorizontalFlip, RandomRotation
 from torch.utils.tensorboard import SummaryWriter
 from template import TemplateModel
+import argparse
+
+
+def get_arg():
+    parser = argparse.ArgumentParser(description="train model")
+    # train config
+    parser.add_argument("--epochs", type=int, default=20, help="训练的轮次")
+    parser.add_argument("--batch_size", type=int, default=50, help="batch_size")
+    parser.add_argument("--init_lr", type=float, default=1e-4, help="初始学习率")
+    arg = parser.parse_args()
+    return arg
 
 
 class ModelT(TemplateModel):
@@ -36,6 +46,7 @@ class ModelT(TemplateModel):
         self.writer = writer  # 推荐设定
         # 训练时print的间隔
         self.log_per_step = 100  # 推荐按数据集大小设定
+        self.lr_scheduler_type = "metric"  # 默认None，即不会使用lr_scheduler
 
 
 def get_loader(batch_size, transforms):
@@ -51,9 +62,12 @@ def get_loader(batch_size, transforms):
 
 
 def main(continue_model=None, clean_log=False, write_params=False):
-    epochs = 20
-    batch_size = 100
-    init_lr = 3e-4
+    # arg
+    arg = get_arg()
+    epochs = arg.epochs
+    batch_size = arg.batch_size
+    init_lr = arg.init_lr
+
     transforms = Compose([RandomRotation(degrees=60),
                           RandomHorizontalFlip(p=0.5),
                           ToTensor()])
@@ -62,19 +76,22 @@ def main(continue_model=None, clean_log=False, write_params=False):
     optimizer = torch.optim.Adam(params=model.parameters(), lr=init_lr)
     loss_fn = nn.CrossEntropyLoss()
     writer = SummaryWriter()
-
+    # 使用模板
     model_t = ModelT([model], [optimizer], loss_fn, train_loader, test_loader, writer)
-    model_t.check_init(clean_log=clean_log)
+    model_t.check_init(clean_log=clean_log, arg=arg)
+    model_t.print_all_member()
     model_t.get_model_info(fake_inp=torch.randn(1, 3, 64, 64))
+
     if continue_model is not None:
         model_t.load_state(continue_model)
 
     start = time.time()
     for _ in range(epochs):
         model_t.train_loop(write_params)
-        model_t.eval(save_per_epochs=5)
-    print(f"DONE! best {model_t.key_metric}:{model_t.best_metric[model_t.key_metric]}")
-    print(f"Final_lr:{optimizer.param_groups[0]['lr']}")
+        model_t.eval_loop(save_per_epochs=5)
+    print(f"DONE!")
+    model_t.print_best_metrics()
+    model_t.print_final_lr()
     print(f"Total Time:{time.time() - start}")
 
 
