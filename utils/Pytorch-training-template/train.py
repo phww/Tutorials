@@ -20,8 +20,8 @@ import argparse
 def get_arg():
     parser = argparse.ArgumentParser(description="train model")
     # train config
-    parser.add_argument("--epochs", type=int, default=20, help="训练的轮次")
-    parser.add_argument("--batch_size", type=int, default=50, help="batch_size")
+    parser.add_argument("--epochs", type=int, default=50, help="训练的轮次")
+    parser.add_argument("--batch_size", type=int, default=200, help="batch_size")
     parser.add_argument("--init_lr", type=float, default=1e-4, help="初始学习率")
     arg = parser.parse_args()
     return arg
@@ -45,7 +45,7 @@ class ModelT(TemplateModel):
         # tensorboard
         self.writer = writer  # 推荐设定
         # 训练时print的间隔
-        self.log_per_step = 100  # 推荐按数据集大小设定
+        self.log_per_step = 25  # 推荐按数据集大小设定
         self.lr_scheduler_type = "metric"  # 默认None，即不会使用lr_scheduler
 
 

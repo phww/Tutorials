@@ -1,10 +1,3 @@
-#!/usr/bin/env python
-# _*_ coding: utf-8 _*_
-# @Time : 2021/5/14 下午4:59
-# @Author : PH
-# @Version：V 2.1
-# @File : template.py
-# @desc : 模型训练模板，详情见：https://github.com/phww/tutorials-and-utils/tree/main/utils/Pytorch-training-template
 import time
 import torch
 from torchsummary import summary
@@ -64,9 +57,9 @@ class TemplateModel:
         # 运行设备
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         # check_point 目录
-        self.ckpt_dir = "./check_point"
+        self.ckpt_dir = "./check_point/" + time.strftime("%Y-%m-%d::%H:%M:%S")
 
-    def check_init(self, log_name="./log.txt", clean_log=False, arg=None):
+    def check_init(self, log_name="log.txt", clean_log=False, arg=None):
         # 检测摸板的初始状态，可以在这加上很多在训练之前的操作
         assert isinstance(self.model_list, list)
         assert isinstance(self.optimizer_list, list)
@@ -77,6 +70,8 @@ class TemplateModel:
         assert self.ckpt_dir
         assert self.log_per_step
         assert self.lr_scheduler_type in [None, "metric", "loss"]
+        if not osp.exists(self.ckpt_dir):
+            os.mkdir(self.ckpt_dir)
 
         # 设置lr_scheduler
         # 如果以测试集的metric为学习率改变的依据，选择mode="max";以loss为依据，选择mode="min"
@@ -89,9 +84,9 @@ class TemplateModel:
             self.lr_scheduler_list = [torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer,
                                                                                  mode=mode,
                                                                                  factor=0.1,
-                                                                                 patience=8,
+                                                                                 patience=5,
                                                                                  cooldown=5,
-                                                                                 min_lr=1e-7,
+                                                                                 min_lr=1e-9,
                                                                                  verbose=True)
                                       for optimizer in self.optimizer_list]
 
@@ -101,7 +96,7 @@ class TemplateModel:
             logger.clean()
         sys.stdout = logger
         print(time.strftime("%Y-%m-%d::%H-%M-%S"))
-
+        self.print_all_member()
         # 如果有，打印arg
         if arg is not None:
             print(15 * "=", "args", 15 * "=")
@@ -115,12 +110,8 @@ class TemplateModel:
         for model in self.model_list:
             model.to(self.device)
 
-        if not osp.exists(self.ckpt_dir):
-            os.mkdir(self.ckpt_dir)
-
-    def load_state(self, fname, optim=True):
-        # 读取保存的模型到模板之中。如果要继续训练的模型optim=True
-        # 使用最佳模型做推断optim=False
+    def load_state(self, fname, optim=True, lr_list=None):
+        # 读取保存的模型到模板之中。如果要继续训练的模型optim=True；使用最佳模型做推断optim=False
         state = torch.load(fname)
         for idx, model in enumerate(self.model_list):
             if isinstance(model, torch.nn.DataParallel):  # 多卡训练
@@ -130,6 +121,10 @@ class TemplateModel:
             # 恢复一些状态参数
             if optim and f'optimizer_list{idx}' in state:
                 self.optimizer_list[idx].load_state_dict(state[f'optimizer_list{idx}'])
+                # 改变先前模型的优化器中保存的学习率
+                if lr_list is not None:
+                    self.change_lr(lr_list)
+
         self.global_step = state['global_step']
         self.global_step_eval = state["global_step_eval"]
         self.epoch = state['epoch']
@@ -158,17 +153,15 @@ class TemplateModel:
         print('save model at {}'.format(fname))
 
     def train_loop(self, write_params=False):
-        """一般来说不用改"""
+        """训练一个epoch，一般来说不用改"""
         print("*" * 15, f"epoch:{self.epoch}", "*" * 15)
-        # 训练一个epoch
         for model in self.model_list:
             model.train()
 
         running_loss = 0.0
-        all_running_loss = 0.0
-        cnt = 0
+        all_avg_loss = 0.0
+        cnt_loss = 0
         for step, batch in enumerate(self.train_loader):
-            cnt += 1
             self.global_step += 1
             batch_loss = self.loss_per_batch(batch)
 
@@ -195,7 +188,8 @@ class TemplateModel:
                 avg_loss = running_loss / (self.log_per_step * len(batch))
                 print(f"loss:{avg_loss : .5f}\t"
                       f"cur:[{(step + 1) * self.train_loader.batch_size}]\[{len(self.train_loader.dataset)}]")
-                all_running_loss += running_loss
+                all_avg_loss += avg_loss
+                cnt_loss += 1
                 running_loss = 0.0
 
                 # Tensorboard记录
@@ -213,7 +207,7 @@ class TemplateModel:
                                     self.writer.add_histogram('grads/' + tag, value.grad.data.cpu().numpy())
 
         # 一个epoch，训练集的全部样本的平均loss
-        avg_batch_loss = all_running_loss / cnt
+        avg_batch_loss = all_avg_loss / cnt_loss
         print(f"epoch:{self.epoch}\tavg_epoch_loss:{avg_batch_loss:.5f}")
         if self.writer is not None:
             self.writer.add_scalars("avg_epoch_loss", {"train": avg_batch_loss}, self.epoch)
@@ -221,10 +215,9 @@ class TemplateModel:
     def loss_per_batch(self, batch):
         """
         计算数据集的一个batch的loss，这个部分是可能要按需求修改的部分
-        # Pytorch 中的loss函数中一般规定x和y都是float，而有些loss函数规定y要为long（比如经常用到的CrossEntropyLoss）
-        # 如果官网：https://pytorch.org/docs/stable/nn.html#loss-functions 对y的数据类型有要求请做相应的修改
-        # 这里除了CrossEntropyLoss将y的数据类型设为long外， 其他都默认x和y的数据类型为float
-
+        Pytorch 中的loss函数中一般规定x和y都是float，而有些loss函数规定y要为long（比如经常用到的CrossEntropyLoss）
+        如果官网：https://pytorch.org/docs/stable/nn.html#loss-functions 对y的数据类型有要求请做相应的修改
+        这里除了CrossEntropyLoss将y的数据类型设为long外， 其他都默认x和y的数据类型为float
         """
         x, y = batch
         x = x.to(self.device, dtype=torch.float)
@@ -248,7 +241,7 @@ class TemplateModel:
         return loss
 
     def eval_loop(self, save_per_epochs=1):
-        """一般不用改"""
+        """一个epoch的评估。一般不用改"""
         print("-" * 15, "Evaluation", "-" * 15)
         # 在整个测试集上做评估，使用分批次的metric的平均值表示训练集整体的metric
         with torch.no_grad():
@@ -257,16 +250,18 @@ class TemplateModel:
 
             # 验证时的loss
             running_loss = 0.0
-            running_loss_all = 0.0
+            all_avg_loss = 0.0
             # 保存各种metric的得分
             scores = {}
             cnt = 0
+            cnt_loss = 0
             for step, batch in enumerate(self.test_loader):
                 cnt += 1
                 self.global_step_eval += 1
+
+                # 计算评估时多个批次的平均loss
                 batch_loss = self.loss_per_batch(batch)
                 running_loss += batch_loss.item()
-
                 # 每self.log_per_step个step打印信息
                 if (step + 1) % self.log_per_step == 0:
                     avg_loss = running_loss / (self.log_per_step * len(batch))
@@ -274,14 +269,13 @@ class TemplateModel:
                         self.writer.add_scalar('eval_loss', avg_loss, self.global_step_eval)
                     print(f"loss:{avg_loss : .5f}\t"
                           f"cur:[{(step + 1) * self.test_loader.batch_size}]\[{len(self.test_loader.dataset)}]")
-                    running_loss_all += running_loss
+                    all_avg_loss += avg_loss
+                    cnt_loss += 1
                     running_loss = 0.0
 
                 # 分批计算metric
-                if step == 1:
-                    scores = self.eval_scores_per_batch(batch)
-                    self.best_metric = scores
-
+                if step == 0:
+                    scores = self.eval_scores_per_batch(batch)  # 每个epoch初始化scores
                 # 累加所有批次的metric。这里有个问题：
                 # 准确率可以使用分批的准确率之和除以分批数量得到，并且与用全部数据集计算准确率是等价的
                 # 但是有的metric使用一部分批次的计算出来的结果可能与使用全部数据集计算出来的结果不同
@@ -289,10 +283,11 @@ class TemplateModel:
                     batch_scores = self.eval_scores_per_batch(batch)
                     for key in scores.keys():
                         scores[key] += batch_scores[key]
+                if self.global_step_eval == 1:
+                    self.best_metric = scores  # 第一次eval时，初始化self.best_metric
 
             # 整个测试集上的平均running_loss
-            avg_batch_loss = running_loss_all / cnt
-
+            avg_batch_loss = all_avg_loss / cnt_loss
             # 整个测试集上的平均metric
             for key in scores.keys():
                 scores[key] /= cnt
@@ -312,7 +307,7 @@ class TemplateModel:
             if self.epoch % save_per_epochs == 0:
                 self.save_state(osp.join(self.ckpt_dir, f'epoch{self.epoch}.pth'))
 
-            # 打印信息
+            # 打印信息:一个epoch上的平均loss和关键指标
             print(f"epoch:{self.epoch}\tavg_epoch_loss:{avg_batch_loss:.5f}")
             print(f'epoch:{self.epoch}\t{self.key_metric}:{scores[self.key_metric]:.5f}')
 
@@ -331,10 +326,10 @@ class TemplateModel:
                         self.writer.add_scalar(f"lr_scheduler{i}",
                                                self.optimizer_list[i].param_groups[0]["lr"],
                                                self.epoch)
-                    if self.lr_scheduler_type == "metric":
-                        lr_scheduler.step(scores[self.key_metric])
-                    elif self.lr_scheduler_type == "loss":
-                        lr_scheduler.step(avg_batch_loss)
+                        if self.lr_scheduler_type == "metric":
+                            lr_scheduler.step(scores[self.key_metric])
+                        elif self.lr_scheduler_type == "loss":
+                            lr_scheduler.step(avg_batch_loss)
             self.epoch += 1
         return scores[self.key_metric]
 
@@ -417,3 +412,11 @@ class TemplateModel:
         for name, value in vars(self).items():
             if name not in except_member:
                 print(f"{name}:{value}")
+
+    def change_lr(self, lr_list):
+        """
+        改变优化器中记录的学习率，主要用于使用已有的模型继续训练时。
+        指定新的学习率，而不是已有模型的优化器中保存的学习率。
+        """
+        for i, optimizer in enumerate(self.optimizer_list):
+            optimizer.param_groups[0]['lr'] = lr_list[i]
